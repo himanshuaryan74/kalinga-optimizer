@@ -1,378 +1,161 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+from datetime import datetime
+import os
 
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.ensemble import RandomForestRegressor
+st.set_page_config(page_title="KalingaStone Master Logger", layout="wide")
+st.title("🏭 KalingaStone Master Batch Logger")
+st.markdown("Record raw batch data to build the plant's historical database.")
 
-import plotly.graph_objects as go
-import plotly.express as px
+# --- 1. General Info ---
+with st.expander("1. General Batch Information", expanded=True):
+    col1, col2, col3 = st.columns(3)
+    batch_id = col1.text_input("Batch ID (Manual)")
+    line = col2.selectbox("Line", ["", "A2", "A5 Line 1", "A5 Line 2", "C1"])
+    shift = col3.radio("Shift", ["Day", "Night"], horizontal=True)
+    
+    col4, col5, col6 = st.columns(3)
+    design = col4.text_input("Design Name (Manual)")
+    supplier = col5.text_input("Resin Supplier (Manual)")
+    operator_name = col6.text_input("Operator Name")
 
-# ============================================================
-# PAGE CONFIG
-# ============================================================
+# --- 2. Material Weights ---
+with st.expander("2. Initial Material Weights (kg)", expanded=False):
+    st.info("Enter the initial charged weights before any operator adjustments.")
+    c1, c2, c3, c4 = st.columns(4)
+    resin_initial = c1.number_input("Initial Resin (kg)", value=0.0)
+    powder = c2.number_input("Powder 400 (kg)", value=0.0)
+    pigment = c3.number_input("Pigment (kg)", value=0.0)
+    
+    st.markdown("**Grit Additions**")
+    g1, g2, g3, g4 = st.columns(4)
+    grit_01_04 = g1.number_input("Grit 0.1-0.4 (kg)", value=0.0)
+    grit_03_07 = g2.number_input("Grit 0.3-0.7 (kg)", value=0.0)
+    grit_06_12 = g3.number_input("Grit 0.6-1.2 (kg)", value=0.0)
+    grit_12_25 = g4.number_input("Grit 1.2-2.5 (kg)", value=0.0)
+    
+    g5, g6, g7, g8 = st.columns(4)
+    grit_25_4 = g5.number_input("Grit 2.5-4 (kg)", value=0.0)
+    grit_4_6 = g6.number_input("Grit 4-6 (kg)", value=0.0)
+    grit_6_8 = g7.number_input("Grit 6-8 (kg)", value=0.0)
+    
+    st.markdown("**Mirror Additions**")
+    m1, m2 = st.columns(2)
+    mirror_03_125 = m1.number_input("Mirror 0.3-1.25 (kg)", value=0.0)
+    mirror_125_25 = m2.number_input("Mirror 1.25-2.5 (kg)", value=0.0)
 
-st.set_page_config(
-    page_title="KalingaStone First Batch Optimizer",
-    page_icon="🏭",
-    layout="wide"
-)
+# --- 3. Process & Sensor Data ---
+with st.expander("3. Process Parameters & Sensor Data", expanded=False):
+    s1, s2, s3 = st.columns(3)
+    ambient_temp = s1.number_input("Ambient Temp (°C)", value=0.0)
+    mixer_temp = s2.number_input("Mixer Temp (°C)", value=0.0)
+    viscosity = s3.number_input("True Viscosity (cP)", value=0.0)
+    
+    s4, s5, s6 = st.columns(3)
+    mixing_start = s4.time_input("Mixing Start Time")
+    mixing_end = s5.time_input("Mixing End Time")
+    actual_mix_sec = s6.number_input("Actual Mixing Time (sec)", value=0)
+    
+    s7, s8, s9 = st.columns(3)
+    final_mix_sec = s7.number_input("Final Mix Setting (Veegoo sec)", value=0)
+    torque_stab = s8.number_input("Torque Stabilization (sec)", value=0)
+    transit_time = s9.number_input("Transit Time (sec)", value=0)
 
-st.title("🏭 KalingaStone Safety-Constrained Batch Optimizer")
+# --- 4. Slab Specs ---
+with st.expander("4. Downstream Slab Specifications", expanded=False):
+    d1, d2, d3, d4 = st.columns(4)
+    slab_size = d1.selectbox("Size Category", ["", "Regular", "Jumbo", "Super Jumbo", "Ultra Super Jumbo"])
+    slab_len = d2.number_input("Length (mm)", value=0)
+    slab_wid = d3.number_input("Width (mm)", value=0)
+    slab_thk = d4.number_input("Thickness (mm)", value=0.0)
+    
+    d5, d6, d7 = st.columns(3)
+    dist_weight = d5.number_input("Distributor Laying Wt (kg)", value=0.0)
+    cnc_vein = d6.selectbox("CNC Vein?", ["No", "Yes"])
+    sys_warning = d7.text_input("System Warning (If any)")
 
-st.markdown(
-    """
-    Dynamic replacement of lab recipe.
+# --- 5. Operator Adjustments ---
+with st.expander("5. Operator Adjustments & Observations", expanded=True):
+    o1, o2, o3 = st.columns(3)
+    wetness_before = o1.slider("Wetness Before Resin (0-100)", 0, 100, 0)
+    extra_resin = o2.number_input("Extra Resin Added (kg)", value=0.0)
+    wetness_after = o3.slider("Wetness After Resin (0-100)", 0, 100, 0)
+    
+    remarks = st.text_area("Remarks / Batch Notes")
 
-    Objective:
-    - Minimize Resin Consumption
-    - Maintain Distributor Flowability
-    - Prevent Vacuum Limit Exceeded
-    - Preserve Vibration Consistency
-    """
-)
+st.write("---")
 
-# ============================================================
-# LOAD DATA
-# ============================================================
+# --- Auto-Calculations ---
+if batch_id:
+    # Math Logic
+    fine_grit = grit_01_04 + grit_03_07 + grit_06_12
+    coarse_grit = grit_12_25 + grit_25_4 + grit_4_6 + grit_6_8
+    total_grit = fine_grit + coarse_grit
+    total_mirror = mirror_03_125 + mirror_125_25
+    final_resin = resin_initial + extra_resin
+    
+    total_batch_weight = final_resin + powder + pigment + total_grit + total_mirror
+    
+    # Percentages
+    resin_perc = (final_resin / total_batch_weight) * 100 if total_batch_weight > 0 else 0
+    mirror_perc = (total_mirror / total_batch_weight) * 100 if total_batch_weight > 0 else 0
+    fine_grit_perc = (fine_grit / total_batch_weight) * 100 if total_batch_weight > 0 else 0
+    coarse_grit_perc = (coarse_grit / total_batch_weight) * 100 if total_batch_weight > 0 else 0
+    
+    wetness_improvement = wetness_after - wetness_before
+    
+    # Density Logic Placeholder (Requires volume calculation)
+    volume_m3 = (slab_len * slab_wid * slab_thk) / 1e9
+    density_gcc = (dist_weight / (volume_m3 * 1000)) if volume_m3 > 0 else 0
+    density_status = "Normal"
+    if density_gcc > 2.45: density_status = "High"
+    elif 0 < density_gcc < 2.35: density_status = "Low"
 
-@st.cache_data
-def load_data():
-    return pd.read_csv("KalingaStone_Master_Data.csv")
+    st.subheader("Auto-Calculated Production Metrics")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Final Resin (kg)", f"{final_resin:.1f}", f"+{extra_resin}kg manual")
+    m2.metric("Total Batch Wt (kg)", f"{total_batch_weight:.1f}")
+    m3.metric("Resin %", f"{resin_perc:.2f}%")
+    m4.metric("Wetness Diff", f"{wetness_improvement}")
+    m5.metric("Density Status", density_status)
 
-df = load_data()
-
-# ============================================================
-# SAFE ENVELOPE
-# ============================================================
-
-healthy = df[df["System_Warning"].isna()].copy()
-
-vac_low = healthy["Press_Vac_85_99_sec"].quantile(0.05)
-vac_high = healthy["Press_Vac_85_99_sec"].quantile(0.95)
-
-dist_low = healthy["Dist_Time_sec"].quantile(0.05)
-dist_high = healthy["Dist_Time_sec"].quantile(0.95)
-
-vib_low = healthy["Press_Vib_sec"].quantile(0.05)
-vib_high = healthy["Press_Vib_sec"].quantile(0.95)
-
-safe_envelope = {
-    "vac_low": vac_low,
-    "vac_high": vac_high,
-    "dist_low": dist_low,
-    "dist_high": dist_high,
-    "vib_low": vib_low,
-    "vib_high": vib_high,
-}
-
-# ============================================================
-# FEATURES
-# ============================================================
-
-FEATURES = [
-    "Design",
-    "Resin_Supplier",
-    "Ambient_Temp_C",
-    "Resin_kg",
-    "Powder_400_kg",
-    "Pigment_kg",
-    "True_Viscosity_cP"
-]
-
-cat_cols = [
-    "Design",
-    "Resin_Supplier"
-]
-
-num_cols = [
-    "Ambient_Temp_C",
-    "Resin_kg",
-    "Powder_400_kg",
-    "Pigment_kg",
-    "True_Viscosity_cP"
-]
-
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
-        ("num", "passthrough", num_cols)
-    ]
-)
-
-# ============================================================
-# MODEL TRAINING
-# ============================================================
-
-@st.cache_resource
-def train_models():
-
-    def build_model(target):
-
-        X = df[FEATURES]
-        y = df[target]
-
-        model = Pipeline([
-            ("prep", preprocessor),
-            ("rf", RandomForestRegressor(
-                n_estimators=400,
-                max_depth=12,
-                random_state=42
-            ))
-        ])
-
-        model.fit(X, y)
-
-        return model
-
-    return {
-        "torque": build_model("Torque_Stab_sec"),
-        "vac": build_model("Press_Vac_85_99_sec"),
-        "vib": build_model("Press_Vib_sec"),
-        "dist": build_model("Dist_Time_sec")
-    }
-
-models = train_models()
-
-torque_model = models["torque"]
-vac_model = models["vac"]
-vib_model = models["vib"]
-dist_model = models["dist"]
-
-# ============================================================
-# FEATURE IMPORTANCE
-# ============================================================
-
-@st.cache_resource
-def feature_importance():
-
-    X = df[FEATURES]
-
-    prep = preprocessor.fit(X)
-
-    names = prep.get_feature_names_out()
-
-    rf = RandomForestRegressor(
-        n_estimators=400,
-        random_state=42
-    )
-
-    X_enc = prep.transform(X)
-
-    rf.fit(X_enc, df["Press_Vac_85_99_sec"])
-
-    imp = pd.DataFrame({
-        "Feature": names,
-        "Importance": rf.feature_importances_
-    })
-
-    return imp.sort_values(
-        "Importance",
-        ascending=False
-    )
-
-imp_df = feature_importance()
-
-# ============================================================
-# SIDEBAR INPUTS
-# ============================================================
-
-st.sidebar.header("Lab Recipe Inputs")
-
-ambient_temp = st.sidebar.slider(
-    "Ambient Temperature (°C)",
-    15,
-    45,
-    30
-)
-
-design = st.sidebar.selectbox(
-    "Design",
-    sorted(df["Design"].unique())
-)
-
-supplier = st.sidebar.selectbox(
-    "Resin Supplier",
-    sorted(df["Resin_Supplier"].unique())
-)
-
-lab_resin = st.sidebar.number_input(
-    "Lab Resin (kg)",
-    value=float(df["Resin_kg"].median())
-)
-
-lab_powder = st.sidebar.number_input(
-    "Lab Powder (kg)",
-    value=float(df["Powder_400_kg"].median())
-)
-
-viscosity = st.sidebar.number_input(
-    "Expected Resin Viscosity (cP)",
-    value=float(df["True_Viscosity_cP"].median())
-)
-
-pigment = st.sidebar.number_input(
-    "Pigment (kg)",
-    value=float(df["Pigment_kg"].median())
-)
-
-# ============================================================
-# OPTIMIZER
-# ============================================================
-
-def optimize_recipe():
-
-    best = None
-
-    search_range = np.arange(
-        lab_resin - 4,
-        lab_resin + 1,
-        0.25
-    )
-
-    for resin in search_range:
-
-        sample = pd.DataFrame([{
-            "Design": design,
-            "Resin_Supplier": supplier,
-            "Ambient_Temp_C": ambient_temp,
-            "Resin_kg": resin,
-            "Powder_400_kg": lab_powder,
-            "Pigment_kg": pigment,
-            "True_Viscosity_cP": viscosity
-        }])
-
-        pred_torque = torque_model.predict(sample)[0]
-        pred_vac = vac_model.predict(sample)[0]
-        pred_vib = vib_model.predict(sample)[0]
-        pred_dist = dist_model.predict(sample)[0]
-
-        safe = (
-            safe_envelope["vac_low"] <= pred_vac <= safe_envelope["vac_high"]
-        ) and (
-            safe_envelope["dist_low"] <= pred_dist <= safe_envelope["dist_high"]
-        ) and (
-            safe_envelope["vib_low"] <= pred_vib <= safe_envelope["vib_high"]
-        )
-
-        if safe:
-
-            best = {
-                "resin": resin,
-                "torque": pred_torque,
-                "vac": pred_vac,
-                "vib": pred_vib,
-                "dist": pred_dist
+    st.write("---")
+    
+    # --- Save Logic ---
+    if st.button("💾 SAVE BATCH DATA", type="primary", use_container_width=True):
+        if not operator_name or not design:
+            st.error("Please fill out Operator Name and Design.")
+        else:
+            # Prepare the row of data
+            new_data = {
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Date": datetime.now().strftime("%Y-%m-%d"),
+                "Batch_ID": batch_id, "Shift": shift, "Line": line, "Design": design, 
+                "Resin_Supplier": supplier, "Operator_Name": operator_name,
+                "Initial_Resin_kg": resin_initial, "Extra_Resin_kg": extra_resin, "Final_Resin_kg": final_resin,
+                "Powder_400_kg": powder, "Pigment_kg": pigment,
+                "Grit_0.1_0.4_kg": grit_01_04, "Grit_0.3_0.7_kg": grit_03_07, "Grit_0.6_1.2_kg": grit_06_12,
+                "Grit_1.2_2.5_kg": grit_12_25, "Grit_2.5_4_kg": grit_25_4, "Grit_4_6_kg": grit_4_6, "Grit_6_8_kg": grit_6_8,
+                "Mirror_0.3_1.25_kg": mirror_03_125, "Mirror_1.25_2.5_kg": mirror_125_25,
+                "Ambient_Temp_C": ambient_temp, "Mixer_Temp_C": mixer_temp, "True_Viscosity_cP": viscosity,
+                "Mixing_Start": str(mixing_start), "Mixing_End": str(mixing_end), 
+                "Actual_Mix_sec": actual_mix_sec, "Final_Mix_sec": final_mix_sec, "Torque_Stab_sec": torque_stab,
+                "Wetness_Before": wetness_before, "Wetness_After": wetness_after, "Wetness_Improvement": wetness_improvement,
+                "Mixture_Density_gcc": round(density_gcc, 3), "Density_Status": density_status,
+                "Slab_Size": slab_size, "Slab_Length_mm": slab_len, "Slab_Width_mm": slab_wid, "Slab_Thickness_mm": slab_thk,
+                "Distributor_Weight_kg": dist_weight, "CNC_Vein": cnc_vein, "Transit_Time_sec": transit_time,
+                "Total_Grit_kg": total_grit, "Total_Mirror_kg": total_mirror, "Total_Batch_Weight_kg": total_batch_weight,
+                "Resin_Percentage": round(resin_perc, 2), "Mirror_Percentage": round(mirror_perc, 2),
+                "Fine_Grit_Percentage": round(fine_grit_perc, 2), "Coarse_Grit_Percentage": round(coarse_grit_perc, 2),
+                "System_Warning": sys_warning, "Remarks": remarks
             }
-
-            break
-
-    return best
-
-result = optimize_recipe()
-
-# ============================================================
-# OUTPUT
-# ============================================================
-
-if result is None:
-
-    st.error(
-        "No safe operating point found. Increase resin or review process."
-    )
-
-else:
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.metric(
-            "Optimized Resin (kg)",
-            round(result["resin"], 2),
-            round(result["resin"] - lab_resin, 2)
-        )
-
-    with col2:
-        st.metric(
-            "Recommended Mix Time (sec)",
-            round(result["torque"], 1)
-        )
-
-    st.divider()
-
-    gauge = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=result["vac"],
-        title={"text": "Predicted Vacuum Time (sec)"},
-        gauge={
-            "axis": {"range": [0, 140]},
-            "steps": [
-                {
-                    "range": [0, safe_envelope["vac_low"]],
-                    "color": "lightcoral"
-                },
-                {
-                    "range": [
-                        safe_envelope["vac_low"],
-                        safe_envelope["vac_high"]
-                    ],
-                    "color": "lightgreen"
-                },
-                {
-                    "range": [
-                        safe_envelope["vac_high"],
-                        140
-                    ],
-                    "color": "red"
-                }
-            ]
-        }
-    ))
-
-    st.plotly_chart(
-        gauge,
-        use_container_width=True
-    )
-
-    st.subheader("Drivers of Vacuum Stability")
-
-    top_imp = imp_df.head(15)
-
-    fig = px.bar(
-        top_imp,
-        x="Importance",
-        y="Feature",
-        orientation="h"
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
-    st.subheader("Predicted Downstream Performance")
-
-    pred_df = pd.DataFrame({
-        "Metric": [
-            "Torque Stabilization",
-            "Distributor Time",
-            "Vacuum Time",
-            "Press Vibration"
-        ],
-        "Prediction": [
-            round(result["torque"], 2),
-            round(result["dist"], 2),
-            round(result["vac"], 2),
-            round(result["vib"], 2)
-        ]
-    })
-
-    st.dataframe(
-        pred_df,
-        use_container_width=True
-    )
-
-with st.expander("Process Safe Envelope"):
-    st.write(safe_envelope)
+            
+            df = pd.DataFrame([new_data])
+            file_name = "KalingaStone_Raw_Master_Data.csv"
+            
+            if os.path.isfile(file_name):
+                df.to_csv(file_name, mode='a', header=False, index=False)
+            else:
+                df.to_csv(file_name, index=False)
+                
+            st.success(f"✅ Batch {batch_id} logged successfully! The CSV has been updated.")
