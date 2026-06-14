@@ -1,11 +1,23 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import os
 
 st.set_page_config(page_title="KalingaStone Master Logger", layout="wide")
 st.title("🏭 KalingaStone Master Batch Logger")
 st.markdown("Record raw batch data to build the plant's historical database.")
+
+file_name = "KalingaStone_Raw_Master_Data.csv"
+
+# --- Define Indian Standard Time (IST) ---
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# --- Memory Initialization ---
+if 'master_db' not in st.session_state:
+    if os.path.isfile(file_name):
+        st.session_state.master_db = pd.read_csv(file_name)
+    else:
+        st.session_state.master_db = pd.DataFrame()
 
 # --- 1. General Info ---
 with st.expander("1. General Batch Information", expanded=True):
@@ -18,6 +30,12 @@ with st.expander("1. General Batch Information", expanded=True):
     design = col4.text_input("Design Name (Manual)")
     supplier = col5.text_input("Resin Supplier (Manual)")
     operator_name = col6.text_input("Operator Name")
+    
+    st.markdown("**Real-Time Log Adjustment**")
+    t1, t2 = st.columns(2)
+    # Default to current IST time, but let operator change it if they are logging late
+    batch_date = t1.date_input("Actual Batch Date", value=datetime.now(IST).date())
+    batch_time = t2.time_input("Actual Batch Time", value=datetime.now(IST).time())
 
 # --- 2. Material Weights ---
 with st.expander("2. Initial Material Weights (kg)", expanded=False):
@@ -50,12 +68,10 @@ with st.expander("3. Process Parameters & Sensor Data", expanded=False):
     mixer_temp = s2.number_input("Mixer Temp (°C)", value=0.0)
     viscosity = s3.number_input("True Viscosity (cP)", value=0.0)
     
-    # Time Calculation Logic
     s4, s5, s6 = st.columns(3)
-    mixing_start = s4.time_input("Mixing Start Time")
-    mixing_end = s5.time_input("Mixing End Time")
+    mixing_start = s4.time_input("Mixing Start Time", value=datetime.strptime("00:00", "%H:%M").time())
+    mixing_end = s5.time_input("Mixing End Time", value=datetime.strptime("00:00", "%H:%M").time())
     
-    # Auto-calculate the difference in seconds
     dummy_date = date.today()
     dt_start = datetime.combine(dummy_date, mixing_start)
     dt_end = datetime.combine(dummy_date, mixing_end)
@@ -64,7 +80,6 @@ with st.expander("3. Process Parameters & Sensor Data", expanded=False):
         dt_end += timedelta(days=1)
         
     calculated_mix_sec = int((dt_end - dt_start).total_seconds())
-    
     s6.info(f"**Auto-Calculated Mixing Time:** {calculated_mix_sec} sec")
     
     s7, s8, s9 = st.columns(3)
@@ -97,20 +112,15 @@ with st.expander("5. Operator Adjustments & Observations", expanded=True):
 
 st.write("---")
 
-# --- Auto-Calculations & Save ---
-file_name = "KalingaStone_Raw_Master_Data.csv"
-
+# --- Auto-Calculations & Save Logic ---
 if batch_id:
-    # Math Logic
     fine_grit = grit_01_04 + grit_03_07 + grit_06_12
     coarse_grit = grit_12_25 + grit_25_4 + grit_4_6 + grit_6_8
     total_grit = fine_grit + coarse_grit
     total_mirror = mirror_03_125 + mirror_125_25
     final_resin = resin_initial + resin_adjustment
-    
     total_batch_weight = final_resin + powder + pigment + total_grit + total_mirror
     
-    # Percentages
     resin_perc = (final_resin / total_batch_weight) * 100 if total_batch_weight > 0 else 0
     mirror_perc = (total_mirror / total_batch_weight) * 100 if total_batch_weight > 0 else 0
     fine_grit_perc = (fine_grit / total_batch_weight) * 100 if total_batch_weight > 0 else 0
@@ -118,7 +128,6 @@ if batch_id:
     
     wetness_diff = wetness_after - wetness_before
     
-    # Density Logic
     volume_m3 = (slab_len * slab_wid * slab_thk) / 1e9
     density_gcc = (dist_weight / (volume_m3 * 1000)) if volume_m3 > 0 else 0
     density_status = "Normal"
@@ -127,11 +136,8 @@ if batch_id:
 
     st.subheader("Auto-Calculated Production Metrics")
     m1, m2, m3, m4, m5 = st.columns(5)
-    
-    # Display the adjustment dynamically (+ or -)
     adj_label = f"+{resin_adjustment}" if resin_adjustment >= 0 else f"{resin_adjustment}"
     m1.metric("Final Resin (kg)", f"{final_resin:.1f}", f"{adj_label} kg manual")
-    
     m2.metric("Total Batch Wt (kg)", f"{total_batch_weight:.1f}")
     m3.metric("Resin %", f"{resin_perc:.2f}%")
     m4.metric("Calculated Mix Time", f"{calculated_mix_sec} sec")
@@ -139,14 +145,18 @@ if batch_id:
 
     st.write("---")
     
-    # --- Save Button ---
+    # --- SAVE BUTTON ---
     if st.button("💾 SAVE BATCH DATA", type="primary", use_container_width=True):
         if not operator_name or not design:
             st.error("Please fill out Operator Name and Design.")
         else:
+            # Capture the exact moment the save button is clicked in IST
+            system_timestamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            
             new_data = {
-                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Date": datetime.now().strftime("%Y-%m-%d"),
+                "System_Timestamp_IST": system_timestamp,
+                "Batch_Date": str(batch_date),
+                "Batch_Time": str(batch_time),
                 "Batch_ID": batch_id, "Shift": shift, "Line": line, "Design": design, 
                 "Resin_Supplier": supplier, "Operator_Name": operator_name,
                 "Initial_Resin_kg": resin_initial, "Resin_Adjustment_kg": resin_adjustment, "Final_Resin_kg": final_resin,
@@ -167,26 +177,29 @@ if batch_id:
                 "System_Warning": sys_warning, "Remarks": remarks
             }
             
-            df = pd.DataFrame([new_data])
-            
-            if os.path.isfile(file_name):
-                df.to_csv(file_name, mode='a', header=False, index=False)
+            new_df = pd.DataFrame([new_data])
+            if st.session_state.master_db.empty:
+                st.session_state.master_db = new_df
             else:
-                df.to_csv(file_name, index=False)
-                
-            st.success(f"✅ Batch {batch_id} logged successfully!")
+                st.session_state.master_db = pd.concat([st.session_state.master_db, new_df], ignore_index=True)
+            
+            st.session_state.master_db.to_csv(file_name, index=False)
+            st.success(f"✅ Batch {batch_id} logged successfully at {system_timestamp}!")
 
-# --- Data Download Section ---
+# --- Visual Data Preview & Download Section ---
 st.write("---")
-st.markdown("### Data Management")
-if os.path.isfile(file_name):
-    with open(file_name, "rb") as file:
-        st.download_button(
-            label="📥 Download Master Excel/CSV File",
-            data=file,
-            file_name=file_name,
-            mime="text/csv",
-            help="Click here to download all logged batches to your computer."
-        )
+st.markdown("### 📊 Live Master Sheet Preview")
+
+if not st.session_state.master_db.empty:
+    st.dataframe(st.session_state.master_db)
+    
+    csv_data = st.session_state.master_db.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Complete Master Sheet (CSV)",
+        data=csv_data,
+        file_name=file_name,
+        mime="text/csv",
+        help="Click here to download all logged batches as one complete Excel file."
+    )
 else:
-    st.info("No data logged yet. The download button will appear after your first save.")
+    st.info("The Master Sheet is currently empty. Log a batch to start building the database.")
